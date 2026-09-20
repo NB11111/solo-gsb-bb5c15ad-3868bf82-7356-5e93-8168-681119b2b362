@@ -190,3 +190,79 @@ test('修改总时长后关键帧截断并重算', async () => {
   assert.equal(doc.querySelectorAll('.pair-row').length, 6);
   dom.window.close();
 });
+
+test('选中关键帧可编辑安全半径：设置、实时碰撞、清除后继承', async () => {
+  const dom = await boot();
+  const { window } = dom;
+  const doc = window.document;
+  const canvas = doc.getElementById('stage');
+
+  function pointer(type, x, y) {
+    canvas.dispatchEvent(new window.MouseEvent(type, {
+      bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0
+    }));
+  }
+
+  const editor = doc.getElementById('key-editor');
+  const rInput = doc.getElementById('ke-radius');
+  const clearBtn = doc.getElementById('ke-clear');
+
+  // 未选中关键帧：编辑器隐藏
+  assert.equal(editor.hidden, true);
+
+  // 选中甲首帧 (60,300)
+  pointer('pointerdown', 60, 300);
+  pointer('pointerup', 60, 300);
+  assert.equal(editor.hidden, false, '选中关键帧后出现半径编辑条');
+  assert.match(doc.getElementById('ke-info').textContent, /甲/);
+  assert.equal(rInput.placeholder, '20', '占位符为继承半径 20');
+  assert.equal(clearBtn.disabled, true, '继承状态下清除按钮禁用');
+
+  // 初始甲×丙安全（错峰）；把甲首帧半径设为 150，张开后在 t≈2 前即覆盖丙
+  rInput.value = '150';
+  rInput.dispatchEvent(new window.Event('input', { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(clearBtn.disabled, false);
+
+  let rows = [...doc.querySelectorAll('.pair-row')].map((r) => r.textContent);
+  let jiaBing = rows.find((t) => t.includes('甲') && t.includes('丙'));
+  assert.match(jiaBing, /碰撞/, '甲首帧张开 150 后应与丙产生碰撞区间');
+  assert.match(jiaBing, /半径和 80～170/, '半径和范围应反映关键帧半径');
+
+  // 对应时间轴时刻柄出现自定义半径标记（样例中丙 t=8 帧自带 1 个）
+  assert.ok(doc.querySelectorAll('.tl-key.custom').length >= 2, '时间轴标记自定义半径帧');
+
+  // 清除半径恢复继承，碰撞消失；自定义标记数回到样例自带的 1 个
+  clearBtn.click();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(clearBtn.disabled, true);
+  assert.equal(doc.querySelectorAll('.tl-key.custom').length, 1);
+  rows = [...doc.querySelectorAll('.pair-row')].map((r) => r.textContent);
+  jiaBing = rows.find((t) => t.includes('甲') && t.includes('丙'));
+  assert.match(jiaBing, /安全/, '恢复继承后甲丙重新安全');
+  dom.window.close();
+});
+
+test('播放时当前安全半径随关键帧插值实时呈现（stateAt）', async () => {
+  const dom = await boot();
+  const { window } = dom;
+  const doc = window.document;
+  const canvas = doc.getElementById('stage');
+
+  function pointer(type, x, y) {
+    canvas.dispatchEvent(new window.MouseEvent(type, {
+      bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0
+    }));
+  }
+
+  // 选中丙 t=8 帧 (940,540)（样例自带 r=60）并确认编辑器读回 60
+  pointer('pointerdown', 940, 540);
+  pointer('pointerup', 940, 540);
+  assert.equal(doc.getElementById('ke-radius').value, '60', '样例关键帧半径应读回 60');
+
+  // 引擎层插值：t=6 位于丙 4->8 帧之间，半径 20->60 线性 -> 40
+  const st = window.CollisionCore.stateAt(
+    [{ t: 4, x: 500, y: 60 }, { t: 8, x: 940, y: 540, r: 60 }], 6, 20);
+  assert.ok(Math.abs(st.r - 40) < 1e-9, `t=6 插值半径应为 40，实际 ${st.r}`);
+  dom.window.close();
+});

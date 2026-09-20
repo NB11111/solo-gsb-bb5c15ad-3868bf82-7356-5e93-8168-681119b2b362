@@ -4,14 +4,23 @@
  * 模型：每位表演者的运动是由关键帧定义的分段直线函数 p(t)。
  * 相邻关键帧之间位置随时间线性插值；关键帧之外（全局起止之间）保持静止。
  *
- * 对任意两人 A、B，相对位置 r(t) = pA(t) - pB(t) 在两人各自同一段
- * 分段线性区间内是时间 t 的一次函数：r(t) = u + v*t。
- * 碰撞条件 |r(t)| <= RA + RB 是关于 t 的二次不等式：
+ * 关键帧可携带可选安全半径 r（表现开伞、展开道具等占用范围变化）：
+ *  - 未设置（缺省/null）时继承表演者当前身体半径；
+ *  - 相邻关键帧之间半径与位置同步线性插值；首尾之外保持端点值。
  *
- *     |v|^2 t^2 + 2(u·v) t + |u|^2 - R^2 <= 0
+ * 对任意两人 A、B，在两人各自同一段分段线性区间内，相对位置与半径和
+ * 都是时间 t 的一次函数：
  *
- * 对每一对相互重叠的活动段用求根公式精确求解区间，再合并跨段相邻区间。
- * 全程没有任何离散帧抽样——解出的就是碰撞发生的精确时间区间。
+ *     r(t) = pA(t) - pB(t) = u + v t
+ *     R(t) = RA(t) + RB(t) = c + d t          （c、d 为常数，R(t) ≥ 0）
+ *
+ * 碰撞条件 |r(t)| ≤ R(t) 平方后是关于 t 的一般二次不等式：
+ *
+ *     (|v|² - d²) t² + 2(u·v - c d) t + |u|² - c² ≤ 0
+ *
+ * 二次项系数可正可负（半径快速张开时为负），统一按求根公式精确求解并
+ * 钳制到重叠时间窗；再合并跨段相邻区间。全程没有任何离散帧抽样——
+ * 解出的就是碰撞发生的精确时间区间。
  */
 (function (root, factory) {
   if (typeof module === 'object' && module.exports) {
@@ -31,15 +40,21 @@
 
   /**
    * 规整关键帧：按 t 排序、去除重复时刻（保留后者）。
-   * 返回 [{t, x, y}, ...]
+   * 可选安全半径 r：非有限值（缺省/null/NaN）归一化为 null，表示继承
+   * 表演者当前半径；有限值钳为非负数。
+   * baseRadius: 调用方提供的继承半径（仅做规范化，不写入缺省帧）。
+   * 返回 [{t, x, y, r}, ...]（r 为非负数或 null）
    */
-  function normalizeKeys(keys) {
+  function normalizeKeys(keys, baseRadius) {
     var list = (keys || [])
       .map(function (k) {
+        var kr = k.r;
+        var hasR = kr !== null && kr !== undefined && kr !== '' && isFinite(Number(kr));
         return {
           t: Number(k.t),
           x: Number(k.x),
-          y: Number(k.y)
+          y: Number(k.y),
+          r: hasR ? Math.max(0, Number(kr)) : null
         };
       })
       .filter(function (k) {
@@ -58,6 +73,30 @@
       }
     });
     return out;
+  }
+
+  /** 取关键帧在时刻 t 的生效安全半径（缺省帧继承 baseRadius，段内线性插值，首尾之外保持端点值）。 */
+  function radiusAt(keys, t, baseRadius) {
+    var rb = Math.max(0, Number(baseRadius) || 0);
+    if (!keys.length) return rb;
+
+    function kr(k) {
+      return k.r === null || k.r === undefined ? rb : k.r;
+    }
+
+    var first = keys[0];
+    var last = keys[keys.length - 1];
+    if (t <= first.t) return kr(first);
+    if (t >= last.t) return kr(last);
+    for (var i = 0; i < keys.length - 1; i++) {
+      var a = keys[i];
+      var b = keys[i + 1];
+      if (t >= a.t && t <= b.t) {
+        var f = (t - a.t) / (b.t - a.t);
+        return kr(a) + (kr(b) - kr(a)) * f;
+      }
+    }
+    return kr(last);
   }
 
   /** 时刻 t 在已规整关键帧上的精确位置（段外保持静止）。 */
@@ -80,13 +119,24 @@
     return { x: last.x, y: last.y };
   }
 
+  /** 一次取得时刻 t 的位置与生效半径（避免前端重复规整关键帧）。 */
+  function stateAt(keys, t, baseRadius) {
+    var ks = normalizeKeys(keys, baseRadius);
+    var pos = positionAt(ks, t);
+    return { x: pos.x, y: pos.y, r: radiusAt(ks, t, baseRadius) };
+  }
+
   /**
    * 把表演者在 [0, duration] 上展开为活动段。
-   * 每段是线性运动 p(t) = (x0 + vx*t, y0 + vy*t)，t ∈ [t0, t1]。
-   * 关键帧之外是 v=0 的静止段。
+   * 每段位置与半径都是时间的一次函数：
+   *     p(t) = (x0 + vx*t, y0 + vy*t)
+   *     R(t) = r0 + vr*t
+   * t ∈ [t0, t1]。关键帧之外位置静止，半径保持端点值。
+   * baseRadius 为表演者当前身体半径，缺省关键帧半径继承它。
    */
-  function buildSegments(keys, duration) {
-    var ks = normalizeKeys(keys);
+  function buildSegments(keys, duration, baseRadius) {
+    var rb = Math.max(0, Number(baseRadius) || 0);
+    var ks = normalizeKeys(keys, rb);
     var durationNum = Number(duration);
     if (!(durationNum > 0)) {
       throw new Error('duration 必须为正数');
@@ -94,11 +144,16 @@
     var T = durationNum;
     var segs = [];
 
-    function addLinear(t0, t1, p0, p1) {
+    function effectiveR(k) {
+      return k.r === null || k.r === undefined ? rb : k.r;
+    }
+
+    function addLinear(t0, t1, p0, p1, r0v, r1v) {
       if (t1 - t0 < EPS) return;
       var dt = t1 - t0;
       var vx = (p1.x - p0.x) / dt;
       var vy = (p1.y - p0.y) / dt;
+      var vr = (r1v - r0v) / dt;
       // 以绝对时刻表示 p(t) = x0 + vx*t，故 x0 是 t=0 截距（p0 - v*t0）
       segs.push({
         t0: t0,
@@ -106,37 +161,39 @@
         x0: p0.x - vx * t0,
         y0: p0.y - vy * t0,
         vx: vx,
-        vy: vy
+        vy: vy,
+        r0: r0v - vr * t0,
+        vr: vr
       });
     }
 
     if (ks.length === 0) {
-      addLinear(0, T, { x: 0, y: 0 }, { x: 0, y: 0 });
+      addLinear(0, T, { x: 0, y: 0 }, { x: 0, y: 0 }, rb, rb);
       return segs;
     }
 
     var first = ks[0];
     var last = ks[ks.length - 1];
 
-    // 首帧之前：静止在首帧位置
+    // 首帧之前：静止在首帧位置，半径保持首帧值
     if (first.t > 0) {
-      addLinear(0, Math.min(first.t, T), first, first);
+      addLinear(0, Math.min(first.t, T), first, first, effectiveR(first), effectiveR(first));
     }
-    // 关键帧之间：直线运动
+    // 关键帧之间：位置直线运动，半径同步线性插值
     for (var i = 0; i < ks.length - 1; i++) {
       var a = ks[i];
       var b = ks[i + 1];
       var t0 = Math.max(0, a.t);
       var t1 = Math.min(T, b.t);
-      if (t1 > t0) addLinear(t0, t1, a, b);
+      if (t1 > t0) addLinear(t0, t1, a, b, effectiveR(a), effectiveR(b));
     }
-    // 末帧之后：静止在末帧位置
+    // 末帧之后：静止在末帧位置，半径保持末帧值
     if (last.t < T) {
-      addLinear(Math.max(0, last.t), T, last, last);
+      addLinear(Math.max(0, last.t), T, last, last, effectiveR(last), effectiveR(last));
     }
     if (!segs.length) {
       // 只有一个关键帧且恰好在边界等退化情况
-      addLinear(0, T, first, first);
+      addLinear(0, T, first, first, effectiveR(first), effectiveR(first));
     }
     return segs;
   }
@@ -164,21 +221,83 @@
   }
 
   /**
-   * 两人在同一时间窗 [lo, hi] 内各自线性运动，精确求碰撞时间区间。
-   * 同时更新最小间距追踪对象 {t, dist}。
+   * 精确求解一般二次不等式 A t² + B t + C ≤ 0 在 [lo, hi] 内的解集。
+   * A 可正可负可为零（半径快速张开时 A = |v|² - d² 可能为负）。
+   * 返回零、一或两个区间（A<0 时解集向两端开口，钳制后最多两段）。
+   * 相切（重根）记为零长度区间。
    */
-  function analyzeOverlap(sA, sB, lo, hi, rSum, minRef) {
+  function solveQuadraticLE(A, B, C, lo, hi) {
+    if (Math.abs(A) < EPS) {
+      // 退化为一次（或常数）不等式 B t + C ≤ 0
+      if (Math.abs(B) < EPS) {
+        if (C <= EPS) return [[lo, hi]];
+        return [];
+      }
+      var root = -C / B;
+      if (B > 0) {
+        // t ≤ root
+        if (root < lo - EPS) return [];
+        return [[lo, Math.min(hi, root)]];
+      }
+      // B < 0：t ≥ root
+      if (root > hi + EPS) return [];
+      return [[Math.max(lo, root), hi]];
+    }
+
+    var disc = B * B - 4 * A * C;
+    if (disc < -EPS) {
+      // 无实根：全程同号
+      if (A < 0) return [[lo, hi]]; // 开口向下、顶点仍 < 0？由 disc<0 知恒负
+      return [];                    // 开口向上，恒正
+    }
+    if (disc < 0) disc = 0;
+    var sq = Math.sqrt(disc);
+    var t1 = (-B - sq) / (2 * A);
+    var t2 = (-B + sq) / (2 * A);
+    if (t1 > t2) { var tmp = t1; t1 = t2; t2 = tmp; }
+
+    if (A > 0) {
+      // 开口向上：≤0 部分在两根之间
+      var l = Math.max(lo, t1);
+      var h = Math.min(hi, t2);
+      if (h >= l - EPS) return [[l, h]];
+      return [];
+    }
+    // 开口向下：≤0 部分在两根之外 → 钳制后最多两段
+    var out = [];
+    if (lo <= t1 + EPS) out.push([lo, Math.min(hi, t1)]);
+    if (hi >= t2 - EPS) out.push([Math.max(lo, t2), hi]);
+    return out;
+  }
+
+  /**
+   * 两人在同一时间窗 [lo, hi] 内各自线性运动、半径各自线性变化，
+   * 精确求碰撞时间区间。同时更新最小间距与半径和极值追踪对象。
+   */
+  function analyzeOverlap(sA, sB, lo, hi, minRef, rangeRef) {
     // 相对运动 r(t) = u + v t
     var ux = sA.x0 - sB.x0;
     var uy = sA.y0 - sB.y0;
     var vx = sA.vx - sB.vx;
     var vy = sA.vy - sB.vy;
 
+    // 半径和 R(t) = c + d t（段内插值，恒非负）
+    var c = sA.r0 + sB.r0;
+    var d = sA.vr + sB.vr;
+
+    // 半径和极值（线性：在端点取极值）
+    var rLo = c + d * lo;
+    var rHi = c + d * hi;
+    if (rLo < rangeRef.min) rangeRef.min = rLo;
+    if (rHi < rangeRef.min) rangeRef.min = rHi;
+    if (rLo > rangeRef.max) rangeRef.max = rLo;
+    if (rHi > rangeRef.max) rangeRef.max = rHi;
+
     var v2 = vx * vx + vy * vy;
     var u2 = ux * ux + uy * uy;
     var uv = ux * vx + uy * vy;
 
-    // —— 最小间距（抛物线 |r(t)|^2 的顶点/端点比较）——
+    // —— 最小几何间距（抛物线 |r(t)|^2 的顶点/端点比较，与半径无关）——
     var tDist;
     if (v2 < EPS) {
       tDist = lo; // 相对静止，距离恒定，任取端点
@@ -194,39 +313,27 @@
       minRef.t = tDist;
     }
 
-    // —— 碰撞区间 |r(t)| <= rSum 的解析解 ——
-    var hits = [];
-    var rr = rSum * rSum;
+    // —— 碰撞区间 |r(t)| ≤ R(t) 的解析解 ——
+    // |u + v t|² ≤ (c + d t)² ⇔ A t² + B t + C ≤ 0
+    var A = v2 - d * d;
+    var B = 2 * (uv - c * d);
+    var C = u2 - c * c;
 
-    if (v2 < EPS) {
-      // 相对静止：要么整段碰撞，要么完全不碰
-      if (u2 <= rr + EPS) {
-        hits.push([lo, hi]);
-      }
-      return hits;
-    }
-
-    var disc = uv * uv - v2 * (u2 - rr);
-    if (disc < -EPS) {
-      return hits; // 二次式恒正，距离始终大于半径和
-    }
-    if (disc < 0) disc = 0;
-    var sq = Math.sqrt(disc);
-    var tA = (-uv - sq) / v2;
-    var tB = (-uv + sq) / v2;
-    var lo2 = Math.max(lo, tA);
-    var hi2 = Math.min(hi, tB);
-    if (hi2 >= lo2 - EPS) {
-      hits.push([Math.max(0, lo2), Math.min(hi2, hi)]);
+    var hits = solveQuadraticLE(A, B, C, lo, hi);
+    // 钳制端点到实际窗（开口向下分支已钳制，这里统一保证精度）
+    for (var i = 0; i < hits.length; i++) {
+      hits[i][0] = clamp(hits[i][0], lo, hi);
+      hits[i][1] = clamp(hits[i][1], lo, hi);
     }
     return hits;
   }
 
   /**
    * 分析一对表演者。
-   * performer: { id?, name?, radius, keys:[{t,x,y}...] }
+   * performer: { id?, name?, radius, keys:[{t,x,y,r?}...] }
+   * 关键帧 r 缺省时继承表演者 radius。
    * 返回 {
-   *   aId,bId,aName,bName, radiusSum,
+   *   aId,bId,aName,bName, radiusSum, radiusSumMin, radiusSumMax,
    *   intervals:[[t0,t1],...],     // 合并后的精确碰撞区间
    *   minDistance, firstContact,   // 首次碰撞时刻（无则 null）
    *   lastRelease
@@ -235,13 +342,14 @@
   function analyzePair(pa, pb, duration) {
     var rA = Math.max(0, Number(pa.radius) || 0);
     var rB = Math.max(0, Number(pb.radius) || 0);
-    var rSum = rA + rB;
+    var rSumBase = rA + rB;
 
-    var segsA = buildSegments(pa.keys, duration);
-    var segsB = buildSegments(pb.keys, duration);
+    var segsA = buildSegments(pa.keys, duration, rA);
+    var segsB = buildSegments(pb.keys, duration, rB);
 
     var raw = [];
     var minRef = { dist: Infinity, t: 0 };
+    var rangeRef = { min: Infinity, max: -Infinity };
 
     var i = 0;
     var j = 0;
@@ -251,7 +359,7 @@
       var lo = Math.max(a.t0, b.t0);
       var hi = Math.min(a.t1, b.t1);
       if (hi - lo > EPS) {
-        var found = analyzeOverlap(a, b, lo, hi, rSum, minRef);
+        var found = analyzeOverlap(a, b, lo, hi, minRef, rangeRef);
         for (var k = 0; k < found.length; k++) raw.push(found[k]);
       }
       if (a.t1 < b.t1 - EPS) i++;
@@ -263,13 +371,18 @@
     if (!isFinite(minRef.dist)) {
       minRef = { dist: 0, t: 0 };
     }
+    if (!isFinite(rangeRef.min)) {
+      rangeRef = { min: rSumBase, max: rSumBase };
+    }
 
     return {
       aId: pa.id,
       bId: pb.id,
       aName: pa.name || pa.id,
       bName: pb.name || pb.id,
-      radiusSum: rSum,
+      radiusSum: rSumBase,
+      radiusSumMin: rangeRef.min,
+      radiusSumMax: rangeRef.max,
       intervals: intervals,
       minDistance: minRef.dist,
       minDistanceT: minRef.t,
@@ -336,7 +449,9 @@
   /**
    * 内置交叉样例（4 人，时长 12s，世界 1000×600）：
    *  - 甲（水平横穿）与乙（竖直纵穿）路径十字交叉，在 t=6 同时到达交点 -> 相撞
-   *  - 丙为错峰折线，几何路径与甲/乙相交但到达时刻错开 -> 不撞
+   *  - 丙为错峰折线，几何路径与甲/乙相交但到达时刻错开 -> 不撞；
+   *    t=8 关键帧安全半径 20→60，表现到位后展开道具（占用范围线性张开），
+   *    张开段与各路径仍保持安全间距
    *  - 丁起初与丙分离，约 t=2.6 起追上丙并保持贴近 -> 持续碰撞（相对静止退化段）
    */
   function builtinScene() {
@@ -366,13 +481,13 @@
         },
         {
           id: 'p3',
-          name: '丙·错峰折线',
+          name: '丙·错峰展伞',
           color: '#22c55e',
           radius: 20,
           keys: [
             { t: 0, x: 60, y: 540 },
             { t: 4, x: 500, y: 60 },
-            { t: 8, x: 940, y: 540 }
+            { t: 8, x: 940, y: 540, r: 60 }
           ]
         },
         {
@@ -394,7 +509,10 @@
     EPS: EPS,
     normalizeKeys: normalizeKeys,
     positionAt: positionAt,
+    radiusAt: radiusAt,
+    stateAt: stateAt,
     buildSegments: buildSegments,
+    solveQuadraticLE: solveQuadraticLE,
     analyzePair: analyzePair,
     analyzeScene: analyzeScene,
     isPerformerInCollision: isPerformerInCollision,

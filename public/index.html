@@ -27,11 +27,22 @@
       <div class="panel">
         <div class="panel-head">
           <span>舞台（世界坐标 1000 × 600）</span>
-          <span class="hint">拖动圆点走位 · 双击空白加帧 · 右键圆点删帧</span>
+          <span class="hint">拖动圆点走位 · 双击空白加帧 · 右键圆点删帧 · 选中圆点可改安全半径（开伞/展道具）</span>
         </div>
         <div class="canvas-wrap">
           <canvas id="stage" width="1000" height="600"></canvas>
           <div id="tooltip" class="tooltip" hidden></div>
+        </div>
+        <div id="key-editor" class="key-editor" hidden>
+          <div class="ke-head">
+            <span id="ke-info" class="ke-info">关键帧</span>
+            <label class="ke-radius-edit">
+              安全半径
+              <input id="ke-radius" type="number" min="0" max="150" step="1" />
+              <button id="ke-clear" class="btn btn-mini" type="button" title="清除本帧半径，恢复继承表演者当前半径">继承</button>
+            </label>
+          </div>
+          <div id="ke-hint" class="ke-hint">留空 = 继承表演者当前半径</div>
         </div>
       </div>
 

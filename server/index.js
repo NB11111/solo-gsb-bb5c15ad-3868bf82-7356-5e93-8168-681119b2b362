@@ -16,14 +16,41 @@ app.get('/healthz', (_req, res) => {
   res.json({ ok: true });
 });
 
-/** 内置交叉样例，前端启动时加载 */
+/** 内置交叉样例（含关键帧安全半径），前端启动时加载 */
 app.get('/api/sample', (_req, res) => {
   res.json(core.builtinScene());
 });
 
 /**
+ * 把入参场景规整为 API 出参形式：每个关键帧都带显式半径 r
+ * （缺省继承的帧解析为表演者当前 radius），便于集成方直接消费。
+ */
+function resolveScene(duration, performers) {
+  return {
+    duration: duration,
+    performers: performers.map((p) => {
+      const base = Math.max(0, Number(p.radius) || 0);
+      const ks = core.normalizeKeys(p.keys, base);
+      return {
+        id: p.id,
+        name: p.name,
+        color: p.color,
+        radius: base,
+        keys: ks.map((k) => ({
+          t: k.t,
+          x: k.x,
+          y: k.y,
+          r: k.r === null ? base : k.r
+        }))
+      };
+    })
+  };
+}
+
+/**
  * 场景碰撞分析（与前端同一份解析引擎，便于集成/校验）。
- * body: { duration, performers:[{name?,radius,keys:[{t,x,y}]}] }
+ * body: { duration, performers:[{name?,radius,keys:[{t,x,y,r?}]}] }
+ * 关键帧 r 为可选安全半径（开伞/展开道具），缺省继承表演者 radius。
  */
 app.post('/api/analyze', (req, res) => {
   try {
@@ -45,7 +72,7 @@ app.post('/api/analyze', (req, res) => {
       if (!(Number(p.radius) >= 0) || !isFinite(Number(p.radius))) {
         throw new Error(`第 ${idx + 1} 人身体半径需为非负数`);
       }
-      p.keys.forEach((k) => {
+      p.keys.forEach((k, ki) => {
         ['t', 'x', 'y'].forEach((f) => {
           if (!isFinite(Number(k[f]))) {
             throw new Error(`第 ${idx + 1} 人存在非法走位点（${f} 非数字）`);
@@ -54,11 +81,16 @@ app.post('/api/analyze', (req, res) => {
         if (Number(k.t) < 0 || Number(k.t) > duration) {
           throw new Error(`第 ${idx + 1} 人存在超出 [0, ${duration}] 的时刻`);
         }
+        if (k.r !== undefined && k.r !== null && k.r !== '') {
+          if (!isFinite(Number(k.r)) || Number(k.r) < 0) {
+            throw new Error(`第 ${idx + 1} 人第 ${ki + 1} 个关键帧安全半径需为非负数`);
+          }
+        }
       });
     });
 
     const result = core.analyzeScene({ duration, performers });
-    res.json(result);
+    res.json(Object.assign({ scene: resolveScene(duration, performers) }, result));
   } catch (err) {
     res.status(400).json({ error: err.message });
   }

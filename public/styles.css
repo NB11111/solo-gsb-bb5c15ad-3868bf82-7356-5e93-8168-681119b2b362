@@ -99,6 +99,34 @@ html, body {
   z-index: 5;
 }
 
+/* 选中关键帧的安全半径编辑条 */
+.key-editor {
+  margin: 0 12px 12px;
+  padding: 8px 12px;
+  border: 1px solid rgba(88, 166, 255, .45);
+  border-radius: 8px;
+  background: rgba(88, 166, 255, .08);
+}
+.ke-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.ke-info { font-weight: 600; font-size: 13px; font-variant-numeric: tabular-nums; }
+.ke-radius-edit {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.ke-radius-edit input { width: 64px; }
+.ke-hint { margin-top: 5px; font-size: 11px; color: var(--text-dim); }
+.ke-hint::before { content: "◎ "; color: var(--accent); }
+#ke-clear:disabled { opacity: .4; cursor: not-allowed; }
+
 /* 播放控制 */
 .transport { display: flex; align-items: center; gap: 8px; }
 .time-readout { color: var(--text-dim); display: flex; align-items: center; gap: 4px; }
@@ -193,6 +221,19 @@ input:focus { outline: none; border-color: var(--accent); }
 }
 .tl-key:active { cursor: grabbing; }
 .tl-key.selected { box-shadow: 0 0 0 2px #fff; }
+.tl-key.custom {
+  border-color: #fff;
+  border-style: solid;
+  border-width: 2px;
+}
+.tl-key.custom::after {
+  content: "";
+  position: absolute;
+  inset: 1px;
+  border: 1px dashed rgba(255, 255, 255, .85);
+  border-radius: 50%;
+  pointer-events: none;
+}
 
 .timeline-playhead {
   position: absolute;

@@ -132,3 +132,161 @@ test('positionAt 线性插值与端点静止', () => {
   approx(mid.y, 10, 1e-9);
   assert.deepEqual(core.positionAt(keys, 9), { x: 40, y: 20 });
 });
+
+test('radiusAt：缺省继承表演者半径，相邻关键帧线性插值，首尾之外保持端点值', () => {
+  const keys = core.normalizeKeys([
+    { t: 0, x: 0, y: 0 },          // 缺省 -> 继承 20
+    { t: 4, x: 0, y: 0, r: 60 },
+    { t: 8, x: 0, y: 0, r: 40 }
+  ], 20);
+  approx(core.radiusAt(keys, -1, 20), 20, 1e-9, '首帧之前保持首帧（继承）值');
+  approx(core.radiusAt(keys, 0, 20), 20, 1e-9);
+  approx(core.radiusAt(keys, 2, 20), 40, 1e-9, '段内线性插值');
+  approx(core.radiusAt(keys, 4, 20), 60, 1e-9);
+  approx(core.radiusAt(keys, 6, 20), 50, 1e-9);
+  approx(core.radiusAt(keys, 8, 20), 40, 1e-9);
+  approx(core.radiusAt(keys, 12, 20), 40, 1e-9, '末帧之后保持末帧值');
+
+  const st = core.stateAt([{ t: 0, x: 10, y: 0 }, { t: 10, x: 90, y: 0, r: 40 }], 5, 20);
+  approx(st.x, 50, 1e-9);
+  approx(st.r, 30, 1e-9, 'stateAt 同步插值位置与半径');
+});
+
+test('可变半径：张开道具提前进入碰撞（半径和线性增大，解析二次式）', () => {
+  // B 沿 x 轴匀速从 0 走到 100（r=10）；A 静止在 x=70，
+  // t∈[0,4] 安全半径 10→50，之后保持 50
+  const a = {
+    id: 'a', radius: 10,
+    keys: [{ t: 0, x: 70, y: 0, r: 10 }, { t: 4, x: 70, y: 0, r: 50 }]
+  };
+  const b = { id: 'b', radius: 10, keys: [{ t: 0, x: 0, y: 0 }, { t: 10, x: 100, y: 0 }] };
+  const r = core.analyzePair(a, b, 10);
+  assert.equal(r.collision, true);
+  // 张开段：间距 70-10t，半径和 20+10t → 相等时 70-10t=20+10t → t=2.5
+  approx(r.firstContact, 2.5, 1e-7, '张开导致首碰 t=2.5');
+  // t≥4 后半径和恒 60、间距持续缩小；穿过中心后在 70-10t=-60 → t=13 才脱离（窗外）
+  approx(r.lastRelease, 10, 1e-7, '窗内始终重叠到收场');
+  // 几何最小间距仍为 0（半径无关）
+  approx(r.minDistance, 0, 1e-7);
+  // 半径和极值：20（起始）～60
+  approx(r.radiusSumMin, 20, 1e-9);
+  approx(r.radiusSumMax, 60, 1e-9);
+});
+
+test('可变半径：单帧张开再收拢，碰撞区间在同段精确起止（两点根）', () => {
+  // B 从 100 走到 0（r=10）；A 静止原点，半径在 t∈[2,6] 由 10 线性升到 90
+  const a = {
+    id: 'a', radius: 10,
+    keys: [{ t: 2, x: 0, y: 0, r: 10 }, { t: 6, x: 0, y: 0, r: 90 }]
+  };
+  const b = { id: 'b', radius: 10, keys: [{ t: 0, x: 100, y: 0 }, { t: 10, x: 0, y: 0 }] };
+  const r = core.analyzePair(a, b, 10);
+  assert.equal(r.collision, true);
+  // 张开段 t∈[2,6]：间距 100-10t，rA=20t-30，半径和 20t-20
+  //   相等：100-10t=20t-20 → t=4 接触
+  approx(r.intervals[0][0], 4, 1e-7, '张开段接触 t=4');
+  // t≥6 后半径和恒 100，间距继续缩小；脱离需 100-10t=-100 → t=20（窗外）
+  approx(r.intervals[r.intervals.length - 1][1], 10, 1e-7);
+});
+
+test('可变半径：相对静止下仅靠张开道具产生精确进入时刻', () => {
+  // 两人完全静止，相距 30；A 半径 10 在 t∈[2,6] 线性升到 50，B 恒 10
+  const a = {
+    id: 'a', radius: 10,
+    keys: [{ t: 0, x: 0, y: 0, r: 10 }, { t: 2, x: 0, y: 0, r: 10 }, { t: 6, x: 0, y: 0, r: 50 }]
+  };
+  const b = { id: 'b', radius: 10, keys: [{ t: 0, x: 30, y: 0 }] };
+  const r = core.analyzePair(a, b, 8);
+  assert.equal(r.collision, true);
+  // 半径和 = 20 + 10(t-2) = 10t（t∈[2,6]），等于 30 时 t=3
+  approx(r.firstContact, 3, 1e-7);
+  approx(r.intervals[0][0], 3, 1e-7);
+  // t≥6 半径和 60 > 30，持续碰撞到窗末
+  approx(r.lastRelease, 8, 1e-7);
+  // 最小几何间距不受半径影响：恒为 30
+  approx(r.minDistance, 30, 1e-7);
+});
+
+test('半径快速张开（二次式首项系数为负）：先碰后随合拢脱离', () => {
+  // 一人匀速离开但半径张开更快：|v|² - d² < 0 分支
+  // B 从 x=0 以 10/s 向 +x（r=0）；A 静止 x=0，r: 0→80 在 t∈[0,4]
+  const a = {
+    id: 'a', radius: 0,
+    keys: [{ t: 0, x: 0, y: 0, r: 0 }, { t: 4, x: 0, y: 0, r: 80 }]
+  };
+  const b = { id: 'b', radius: 0, keys: [{ t: 0, x: 0, y: 0 }, { t: 8, x: 80, y: 0 }] };
+  const r = core.analyzePair(a, b, 8);
+  // t∈[0,4]：间距 10t，半径和 20t → 10t ≤ 20t 恒成立（t=0 重合）
+  // t∈[4,8]：间距 10t，半径和恒 80 → 10t ≤ 80 → t ≤ 8（t=8 相切脱离）
+  assert.equal(r.collision, true);
+  approx(r.firstContact, 0, 1e-7);
+  approx(r.lastRelease, 8, 1e-7, 't=8 恰好相切');
+});
+
+test('未设置关键帧半径时与固定半径结果完全一致（向后兼容）', () => {
+  const a1 = { id: 'a', radius: 10, keys: [{ t: 0, x: 0, y: 0 }, { t: 10, x: 100, y: 0 }] };
+  const a2 = {
+    id: 'a', radius: 10,
+    keys: [{ t: 0, x: 0, y: 0, r: 10 }, { t: 10, x: 100, y: 0, r: 10 }]
+  };
+  const b = { id: 'b', radius: 10, keys: [{ t: 0, x: 100, y: 0 }, { t: 10, x: 0, y: 0 }] };
+  const r1 = core.analyzePair(a1, b, T);
+  const r2 = core.analyzePair(a2, b, T);
+  assert.equal(r1.intervals.length, r2.intervals.length);
+  approx(r1.intervals[0][0], r2.intervals[0][0]);
+  approx(r1.intervals[0][1], r2.intervals[0][1]);
+  approx(r1.minDistance, r2.minDistance);
+  approx(r2.radiusSumMin, 20, 1e-9);
+  approx(r2.radiusSumMax, 20, 1e-9);
+});
+
+test('收拢道具在半径线性减小段精确脱离碰撞', () => {
+  // 两人完全静止，相距 30；A 半径在 t∈[2,6] 由 50 线性收到 10，B 恒 10
+  const a = {
+    id: 'a', radius: 10,
+    keys: [{ t: 0, x: 0, y: 0, r: 50 }, { t: 2, x: 0, y: 0, r: 50 }, { t: 6, x: 0, y: 0, r: 10 }]
+  };
+  const b = { id: 'b', radius: 10, keys: [{ t: 0, x: 30, y: 0 }] };
+  const r = core.analyzePair(a, b, 8);
+  assert.equal(r.collision, true);
+  // t<2 半径和 60 ≥ 30 全程碰撞；收拢段半径和 = 60-10(t-2) = 80-10t
+  // 等于 30 时 t=5 脱离，之后半径和 20 < 30 安全
+  assert.equal(r.intervals.length, 1);
+  approx(r.intervals[0][0], 0, 1e-7);
+  approx(r.intervals[0][1], 5, 1e-7);
+});
+
+test('跨关键帧半径分段：张开段进入与关键帧处相切合并', () => {
+  // A 静止原点；t∈[0,4] r 10→50，t∈[4,8] r 50→10；B 以 10/s 从 100 走向 0（r=10）
+  const a = {
+    id: 'a', radius: 10,
+    keys: [
+      { t: 0, x: 0, y: 0, r: 10 },
+      { t: 4, x: 0, y: 0, r: 50 },
+      { t: 8, x: 0, y: 0, r: 10 }
+    ]
+  };
+  const b = { id: 'b', radius: 10, keys: [{ t: 0, x: 100, y: 0 }, { t: 10, x: 0, y: 0 }] };
+  const r = core.analyzePair(a, b, 10);
+  assert.equal(r.collision, true);
+  // 张开段：间距 100-10t，半径和 20+10t，相等时 t=4（恰在关键帧处相切进入）
+  // 合拢段半径和 100-10t，与间距恒等，整段重叠；t≥8 后半径和 20、间距继续缩小，
+  // 在 t∈[8,10] 内间距 ≤20 → 直到 t=10。两段在 t=4 相接，合并为单一区间
+  assert.equal(r.intervals.length, 1, '段边界相接区间应合并为一段');
+  approx(r.intervals[0][0], 4, 1e-6);
+  approx(r.intervals[0][1], 10, 1e-6);
+});
+
+test('内置样例含关键帧半径且不改变原有碰撞结论', () => {
+  const s = core.builtinScene();
+  const p3 = s.performers.find((p) => p.id === 'p3');
+  assert.equal(p3.keys[2].r, 60, '丙 t=8 帧携带展开半径 60');
+  const r = core.analyzeScene(s);
+  const p13 = r.pairs.find((p) => p.aId === 'p1' && p.bId === 'p3');
+  const p23 = r.pairs.find((p) => p.aId === 'p2' && p.bId === 'p3');
+  assert.equal(p13.collision, false, '展开后与甲仍安全');
+  assert.equal(p23.collision, false, '展开后与乙仍安全');
+  const p34 = r.pairs.find((p) => p.aId === 'p3' && p.bId === 'p4');
+  assert.equal(p34.collision, true);
+  approx(p34.firstContact, 2.60, 0.02);
+});
