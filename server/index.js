@@ -23,7 +23,9 @@ app.get('/api/sample', (_req, res) => {
 
 /**
  * 场景碰撞分析（与前端同一份解析引擎，便于集成/校验）。
- * body: { duration, performers:[{name?,radius,keys:[{t,x,y}]}] }
+ * body: { duration, performers:[{name?,radius,keys:[{t,x,y,r?}]}] }
+ * 关键帧 r 可选：非负数表示该时刻安全半径（相邻帧线性插值）；
+ * 缺省/null 时继承表演者 radius。
  */
 app.post('/api/analyze', (req, res) => {
   try {
@@ -53,6 +55,13 @@ app.post('/api/analyze', (req, res) => {
         });
         if (Number(k.t) < 0 || Number(k.t) > duration) {
           throw new Error(`第 ${idx + 1} 人存在超出 [0, ${duration}] 的时刻`);
+        }
+        // 可选关键帧安全半径：允许缺省/null/空串（继承），给出则必须为非负数
+        if (k.r !== null && k.r !== undefined && k.r !== '') {
+          const kr = Number(k.r);
+          if (!isFinite(kr) || kr < 0) {
+            throw new Error(`第 ${idx + 1} 人存在非法关键帧半径（需为非负数）`);
+          }
         }
       });
     });

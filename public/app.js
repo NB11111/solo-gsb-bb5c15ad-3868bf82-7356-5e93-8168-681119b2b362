@@ -9,6 +9,7 @@
   var COLORS = ['#ef4444', '#38bdf8', '#22c55e', '#facc15', '#a78bfa', '#fb923c', '#f472b6', '#2dd4bf'];
   var KEY_HIT_PX = 9;      // 走位点命中半径（屏幕像素）
   var TICK_HIT_PX = 7;     // 时间轴时刻柄命中半径
+  var KEY_R_MAX = 300;     // 关键帧安全半径上限（允许大于身体半径，表现开伞/展道具）
 
   var canvas = document.getElementById('stage');
   var ctx = canvas.getContext('2d');
@@ -50,7 +51,8 @@
           return {
             t: Number(k.t),
             x: Number(k.x),
-            y: Number(k.y)
+            y: Number(k.y),
+            r: Core.parseKeyRadius(k.r)
           };
         })
       };
@@ -64,12 +66,30 @@
     recompute();
     renderPerformers();
     renderTimelineStatic();
+    refreshKeyEditor();
     draw();
   }
 
   function clampRadius(r) {
     if (!isFinite(r) || r < 0) return 20;
     return Math.min(150, Math.round(r * 10) / 10);
+  }
+
+  /** 关键帧半径编辑值规整：空/非法 -> null（继承表演者半径），否则钳到 [0, 300]。 */
+  function clampKeyRadius(r) {
+    if (r === null || r === undefined || r === '') return null;
+    var n = Number(r);
+    if (!isFinite(n) || n < 0) return null;
+    return Math.min(KEY_R_MAX, Math.round(n * 10) / 10);
+  }
+
+  /** 当前选中关键帧（{p, key} 或 null），索引失效时自动返回 null。 */
+  function selectedKeyRef() {
+    if (!state.selectedKey) return null;
+    var p = getPerformer(state.selectedKey.pid);
+    if (!p) return null;
+    var k = p.keys[state.selectedKey.index];
+    return k ? { p: p, key: k } : null;
   }
 
   // ---------- 重算（拖动后立即调用） ----------
@@ -143,6 +163,7 @@
       };
       canvas.setPointerCapture(e.pointerId);
       renderPerformers();
+      refreshKeyEditor();
       draw();
     } else if (state.selectedPid) {
       // 空白按下：准备新增走位点（pointerup 未移动则加入）
@@ -161,6 +182,8 @@
       var key = perf.keys[state.drag.index];
       key.x = clamp(Math.round(w.x), 0, WORLD_W);
       key.y = clamp(Math.round(w.y), 0, WORLD_H);
+      if (document.activeElement !== keyXEl) keyXEl.value = key.x;
+      if (document.activeElement !== keyYEl) keyYEl.value = key.y;
       recompute();
       draw();
       showTooltip(e, perf, key);
@@ -198,6 +221,7 @@
     }
     state.drag = null;
     renderTimelineStatic();
+    refreshKeyEditor();
     draw();
   });
 
@@ -226,8 +250,10 @@
 
   function showTooltip(e, p, k) {
     tooltip.hidden = false;
+    var custom = k.r !== null && k.r !== undefined;
     tooltip.textContent = p.name + ' · t=' + k.t.toFixed(1) + 's · (' +
-      Math.round(k.x) + ', ' + Math.round(k.y) + ') · r=' + p.radius;
+      Math.round(k.x) + ', ' + Math.round(k.y) + ') · ' +
+      (custom ? '帧半径 r=' + k.r : 'r=' + p.radius + '（继承）');
     var rect = canvas.getBoundingClientRect();
     var wrapRect = canvas.parentElement.getBoundingClientRect();
     tooltip.style.left = (e.clientX - wrapRect.left) + 'px';
@@ -242,20 +268,22 @@
     var xx = clamp(Math.round(x), 0, WORLD_W);
     var yy = clamp(Math.round(y), 0, WORLD_H);
 
-    // 同时刻已存在则移动该帧
+    // 同时刻已存在则移动该帧（保留其安全半径）
     var existing = p.keys.findIndex(function (k) { return Math.abs(k.t - tt) < 1e-6; });
     if (existing >= 0) {
       p.keys[existing].x = xx;
       p.keys[existing].y = yy;
       state.selectedKey = { pid: pid, index: existing };
     } else {
-      p.keys.push({ t: tt, x: xx, y: yy });
+      // 新帧默认继承表演者半径（r=null），可随后选中编辑
+      p.keys.push({ t: tt, x: xx, y: yy, r: null });
       p.keys.sort(function (a, b) { return a.t - b.t; });
       state.selectedKey = { pid: pid, index: p.keys.findIndex(function (k) { return Math.abs(k.t - tt) < 1e-6; }) };
     }
     recompute();
     renderPerformers();
     renderTimelineStatic();
+    refreshKeyEditor();
     draw();
   }
 
@@ -267,6 +295,7 @@
     recompute();
     renderPerformers();
     renderTimelineStatic();
+    refreshKeyEditor();
     draw();
   }
 
@@ -295,10 +324,12 @@
       drawKeys(p);
     });
 
-    // 当前身体位置
+    // 当前身体位置（半径为关键帧半径同步插值后的当前安全范围）
     state.performers.forEach(function (p) {
-      var pos = Core.positionAt(Core.normalizeKeys(p.keys), t);
-      drawBody(p, pos, dangerIds[p.id]);
+      var ks = Core.normalizeKeys(p.keys);
+      var pos = Core.positionAt(ks, t);
+      var rad = Core.radiusAt(ks, t, p.radius);
+      drawBody(p, pos, rad, dangerIds[p.id]);
     });
   }
 
@@ -386,6 +417,20 @@
     p.keys.forEach(function (k, i) {
       var selected = state.selectedKey &&
         state.selectedKey.pid === p.id && state.selectedKey.index === i;
+      var kr = Core.keyRadius(k, p.radius);
+      var custom = k.r !== null && k.r !== undefined;
+
+      // 自定义安全半径的关键帧：画出该时刻的范围环（区别于普通帧）
+      if (custom && kr > 0) {
+        ctx.beginPath();
+        ctx.arc(k.x, k.y, kr, 0, Math.PI * 2);
+        ctx.strokeStyle = dim(p.color, selected ? 0.85 : 0.4);
+        ctx.lineWidth = selected ? 2 : 1.25;
+        ctx.setLineDash([5, 5]);
+        ctx.stroke();
+        ctx.setLineDash([]);
+      }
+
       ctx.beginPath();
       ctx.arc(k.x, k.y, selected ? 8 : (isSel ? 6.5 : 5), 0, Math.PI * 2);
       ctx.fillStyle = p.color;
@@ -394,19 +439,23 @@
       ctx.strokeStyle = selected ? '#ffffff' : 'rgba(0,0,0,0.7)';
       ctx.stroke();
 
-      // 时刻标签（选中者）
+      // 时刻 + 有效半径标签（选中者）
       if (isSel) {
         ctx.font = '11px system-ui, sans-serif';
         ctx.fillStyle = 'rgba(230,237,243,0.85)';
         ctx.fillText(k.t.toFixed(1) + 's', k.x + 9, k.y - 8);
+        if (custom) {
+          ctx.fillStyle = dim(p.color, 0.95);
+          ctx.fillText('r=' + kr, k.x + 9, k.y + 14);
+        }
       }
     });
   }
 
-  function drawBody(p, pos, danger) {
-    // 身体半径盘
+  function drawBody(p, pos, rad, danger) {
+    // 安全半径盘（播放时随关键帧半径插值实时缩放）
     ctx.beginPath();
-    ctx.arc(pos.x, pos.y, p.radius, 0, Math.PI * 2);
+    ctx.arc(pos.x, pos.y, rad, 0, Math.PI * 2);
     ctx.fillStyle = dim(p.color, danger ? 0.32 : 0.16);
     ctx.fill();
     ctx.lineWidth = danger ? 3 : 2;
@@ -425,7 +474,7 @@
     // 名牌
     ctx.font = 'bold 12px system-ui, sans-serif';
     ctx.fillStyle = danger ? '#ff8f8a' : 'rgba(230,237,243,0.95)';
-    ctx.fillText(p.name, pos.x + p.radius + 6, pos.y - p.radius - 4);
+    ctx.fillText(p.name, pos.x + rad + 6, pos.y - rad - 4);
   }
 
   function currentDangerIds(t) {
@@ -460,11 +509,12 @@
       ctx.setLineDash([]);
 
       var d = Math.hypot(paPos.x - pbPos.x, paPos.y - pbPos.y);
+      var rNow = Core.radiusAt(pa.keys, t, pa.radius) + Core.radiusAt(pb.keys, t, pb.radius);
       var mx = (paPos.x + pbPos.x) / 2;
       var my = (paPos.y + pbPos.y) / 2;
       ctx.font = 'bold 12px system-ui, sans-serif';
       ctx.fillStyle = '#ff8f8a';
-      ctx.fillText('间距 ' + d.toFixed(1), mx + 6, my - 6);
+      ctx.fillText('间距 ' + d.toFixed(1) + ' / 半径和 ' + rNow.toFixed(1), mx + 6, my - 6);
     });
   }
 
@@ -507,6 +557,7 @@
         p.radius = clampRadius(Number(rInput.value));
         rInput.value = p.radius;
         recompute();
+        refreshKeyEditor();
         draw();
       });
       rInput.addEventListener('click', function (e) { e.stopPropagation(); });
@@ -531,6 +582,7 @@
         state.selectedKey = null;
         renderPerformers();
         renderTimelineStatic();
+        refreshKeyEditor();
         draw();
       });
       box.appendChild(row);
@@ -538,6 +590,110 @@
 
     document.getElementById('btn-add').disabled = state.performers.length >= 8;
   }
+
+  // ---------- 选中关键帧编辑面板 ----------
+  var keyPanelEl = document.getElementById('key-panel');
+  var keyTEl = document.getElementById('key-t');
+  var keyXEl = document.getElementById('key-x');
+  var keyYEl = document.getElementById('key-y');
+  var keyREl = document.getElementById('key-r');
+  var keyRHintEl = document.getElementById('key-r-hint');
+
+  /** 同步关键帧编辑面板的显隐/数值（不改写正在编辑的输入焦点）。 */
+  function refreshKeyEditor() {
+    var ref = selectedKeyRef();
+    if (!ref) {
+      keyPanelEl.hidden = true;
+      return;
+    }
+    var p = ref.p;
+    var k = ref.key;
+    keyPanelEl.hidden = false;
+    document.getElementById('key-perf-name').textContent = p.name;
+    keyTEl.max = String(state.duration);
+    keyTEl.value = Math.round(k.t * 100) / 100;
+    keyXEl.value = Math.round(k.x);
+    keyYEl.value = Math.round(k.y);
+    if (document.activeElement !== keyREl) {
+      keyREl.value = (k.r === null || k.r === undefined) ? '' : k.r;
+    }
+    var eff = Core.keyRadius(k, p.radius);
+    keyRHintEl.textContent =
+      '该时刻有效安全半径 ' + eff + '；相邻关键帧之间与位置同步线性插值。' +
+      (k.r === null || k.r === undefined ? '（当前继承表演者半径 ' + p.radius + '）' : '');
+  }
+
+  /** 关键帧结构变化（时刻/排序/增删）后统一刷新全部相关视图。 */
+  function refreshAfterKeyStructure() {
+    recompute();
+    renderPerformers();
+    renderTimelineStatic();
+    refreshKeyEditor();
+    draw();
+  }
+
+  keyTEl.addEventListener('change', function () {
+    var ref = selectedKeyRef();
+    if (!ref) return;
+    var p = ref.p;
+    var newT = clamp(Math.round(Number(keyTEl.value) * 10) / 10, 0, state.duration);
+    if (!isFinite(newT)) { keyTEl.value = ref.key.t; return; }
+    var clash = p.keys.some(function (k) { return k === ref.key ? false : Math.abs(k.t - newT) < 1e-6; });
+    if (clash) { keyTEl.value = ref.key.t; return; }
+    ref.key.t = newT;
+    p.keys.sort(function (a, b) { return a.t - b.t; });
+    state.selectedKey = { pid: p.id, index: p.keys.indexOf(ref.key) };
+    refreshAfterKeyStructure();
+  });
+
+  keyXEl.addEventListener('change', function () {
+    var ref = selectedKeyRef();
+    if (!ref) return;
+    var v = clamp(Math.round(Number(keyXEl.value)), 0, WORLD_W);
+    if (!isFinite(v)) { keyXEl.value = Math.round(ref.key.x); return; }
+    ref.key.x = v;
+    keyXEl.value = v;
+    recompute();
+    draw();
+  });
+
+  keyYEl.addEventListener('change', function () {
+    var ref = selectedKeyRef();
+    if (!ref) return;
+    var v = clamp(Math.round(Number(keyYEl.value)), 0, WORLD_H);
+    if (!isFinite(v)) { keyYEl.value = Math.round(ref.key.y); return; }
+    ref.key.y = v;
+    keyYEl.value = v;
+    recompute();
+    draw();
+  });
+
+  keyREl.addEventListener('change', function () {
+    var ref = selectedKeyRef();
+    if (!ref) return;
+    var raw = keyREl.value.trim();
+    ref.key.r = raw === '' ? null : clampKeyRadius(raw);
+    keyREl.value = ref.key.r === null ? '' : ref.key.r;
+    recompute();   // 半径改动立即刷新碰撞区间
+    renderPairs();
+    refreshKeyEditor();
+    draw();        // 半径环/当前范围立即重绘
+  });
+
+  document.getElementById('btn-key-r-clear').addEventListener('click', function () {
+    var ref = selectedKeyRef();
+    if (!ref) return;
+    ref.key.r = null;
+    recompute();
+    renderPairs();
+    refreshKeyEditor();
+    draw();
+  });
+
+  document.getElementById('btn-key-del').addEventListener('click', function () {
+    var ref = selectedKeyRef();
+    if (ref) removeKey(ref.p.id, state.selectedKey.index);
+  });
 
   function addPerformer() {
     if (state.performers.length >= 8) return;
@@ -548,15 +704,17 @@
       color: COLORS[idx % COLORS.length],
       radius: 20,
       keys: [
-        { t: 0, x: 80 + idx * 60, y: 80 + idx * 40 },
-        { t: state.duration, x: WORLD_W - 80 - idx * 40, y: WORLD_H - 80 - idx * 30 }
+        { t: 0, x: 80 + idx * 60, y: 80 + idx * 40, r: null },
+        { t: state.duration, x: WORLD_W - 80 - idx * 40, y: WORLD_H - 80 - idx * 30, r: null }
       ]
     };
     state.performers.push(np);
     state.selectedPid = np.id;
+    state.selectedKey = null;
     recompute();
     renderPerformers();
     renderTimelineStatic();
+    refreshKeyEditor();
     draw();
   }
 
@@ -571,6 +729,7 @@
     recompute();
     renderPerformers();
     renderTimelineStatic();
+    refreshKeyEditor();
     draw();
   }
 
@@ -640,6 +799,9 @@
 
       var status = document.createElement('div');
       status.className = 'pair-status';
+      var radiusText = pair.variableRadius
+        ? '半径和 ' + fmt(pair.radiusSumMin, 0) + '～' + fmt(pair.radiusSumMax, 0)
+        : '半径和 ' + fmt(pair.radiusSum, 0);
       if (pair.collision) {
         var chips = pair.intervals.map(function (iv) {
           return '<span class="iv-chip">' + fmt(iv[0]) + ' – ' + fmt(iv[1]) + ' s</span>';
@@ -648,11 +810,11 @@
           '<b>碰撞</b> · 首碰 <b>' + fmt(pair.firstContact) + '</b> s · 共 ' +
           pair.intervals.length + ' 段' +
           '<div class="interval-chips">' + chips + '</div>' +
-          '最小间距 <b>' + fmt(pair.minDistance) + '</b> @ ' + fmt(pair.minDistanceT) + 's · 半径和 ' + fmt(pair.radiusSum, 0);
+          '最小间距 <b>' + fmt(pair.minDistance) + '</b> @ ' + fmt(pair.minDistanceT) + 's · ' + radiusText;
       } else {
         status.innerHTML =
           '<b>安全</b> · 最小间距 <b>' + fmt(pair.minDistance) + '</b> @ ' +
-          fmt(pair.minDistanceT) + 's（半径和 ' + fmt(pair.radiusSum, 0) + '）';
+          fmt(pair.minDistanceT) + 's（' + radiusText + '）';
       }
 
       row.appendChild(badge);
@@ -722,6 +884,7 @@
           state.selectedPid = p.id;
           state.selectedKey = { pid: p.id, index: i };
           renderPerformers();
+          refreshKeyEditor();
           draw();
           state.drag = {
             type: 'tick',
@@ -786,6 +949,7 @@
       state.drag.moved = true;
       recompute();
       renderTimelineStatic();
+      refreshKeyEditor();
     }
   });
 
@@ -884,12 +1048,15 @@
 
   document.getElementById('btn-clear').addEventListener('click', function () {
     state.performers.forEach(function (p) {
-      p.keys = [{ t: 0, x: p.keys[0] ? p.keys[0].x : 100, y: p.keys[0] ? p.keys[0].y : 100 }];
+      var first = p.keys[0] || { x: 100, y: 100 };
+      p.keys = [{ t: 0, x: first.x, y: first.y, r: null }];
     });
     state.time = 0;
     state.activePairKey = null;
+    state.selectedKey = null;
     recompute();
     renderTimelineStatic();
+    refreshKeyEditor();
     draw();
   });
 
@@ -903,13 +1070,15 @@
     // 截断越界关键帧
     state.performers.forEach(function (p) {
       p.keys = p.keys.filter(function (k) { return k.t <= d; });
-      if (!p.keys.length) p.keys = [{ t: 0, x: 100, y: 100 }];
+      if (!p.keys.length) p.keys = [{ t: 0, x: 100, y: 100, r: null }];
       // 保证每人末帧覆盖新时长（静态延长）
     });
+    state.selectedKey = null;
     state.time = Math.min(state.time, d);
     document.getElementById('duration-readout').textContent = d.toFixed(1);
     recompute();
     renderTimelineStatic();
+    refreshKeyEditor();
     draw();
   });
 

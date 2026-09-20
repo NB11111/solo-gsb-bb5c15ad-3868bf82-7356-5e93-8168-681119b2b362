@@ -190,3 +190,105 @@ test('修改总时长后关键帧截断并重算', async () => {
   assert.equal(doc.querySelectorAll('.pair-row').length, 6);
   dom.window.close();
 });
+
+test('选中关键帧显示编辑面板；未选时隐藏', async () => {
+  const dom = await boot();
+  const { window } = dom;
+  const doc = window.document;
+  const panel = doc.getElementById('key-panel');
+  const canvas = doc.getElementById('stage');
+
+  // 初始未选中任何帧
+  assert.equal(panel.hidden, true);
+
+  // 点中甲的首帧 (60,300)
+  canvas.dispatchEvent(new window.MouseEvent('pointerdown', {
+    bubbles: true, cancelable: true, clientX: 60, clientY: 300, button: 0
+  }));
+  canvas.dispatchEvent(new window.MouseEvent('pointerup', {
+    bubbles: true, cancelable: true, clientX: 60, clientY: 300, button: 0
+  }));
+  await new Promise((r) => setTimeout(r, 5));
+
+  assert.equal(panel.hidden, false);
+  assert.match(doc.getElementById('key-perf-name').textContent, /甲/);
+  assert.equal(doc.getElementById('key-x').value, '60');
+  assert.equal(doc.getElementById('key-y').value, '300');
+  assert.equal(doc.getElementById('key-t').value, '0');
+  // 旧数据无帧半径：输入为空（继承），提示显示基础半径 20
+  assert.equal(doc.getElementById('key-r').value, '');
+  assert.match(doc.getElementById('key-r-hint').textContent, /继承表演者半径 20/);
+
+  // 点表演者行取消帧选中 -> 面板隐藏
+  doc.querySelector('.performer-item').click();
+  assert.equal(panel.hidden, true);
+  dom.window.close();
+});
+
+test('编辑关键帧安全半径后碰撞区间立即刷新；清除后恢复继承', async () => {
+  const dom = await boot();
+  const { window } = dom;
+  const doc = window.document;
+  const canvas = doc.getElementById('stage');
+
+  // 选中甲首帧 (60,300)
+  canvas.dispatchEvent(new window.MouseEvent('pointerdown', {
+    bubbles: true, cancelable: true, clientX: 60, clientY: 300, button: 0
+  }));
+  canvas.dispatchEvent(new window.MouseEvent('pointerup', {
+    bubbles: true, cancelable: true, clientX: 60, clientY: 300, button: 0
+  }));
+  await new Promise((r) => setTimeout(r, 5));
+
+  // 初始甲×丙是安全对（错峰）；给甲一个时刻 0 的超大半径 300 必然引发碰撞
+  const rEl = doc.getElementById('key-r');
+  rEl.value = '300';
+  rEl.dispatchEvent(new window.Event('change', { bubbles: true }));
+  await new Promise((r) => setTimeout(r, 10));
+
+  const rows = [...doc.querySelectorAll('.pair-row')].map((el) => el.textContent);
+  const jiaBing = rows.find((t) => t.includes('甲') && t.includes('丙'));
+  assert.match(jiaBing, /碰撞/, '甲 t=0 展开 r=300 后应与丙碰撞');
+  // 结果面板对可变半径对展示半径和区间
+  assert.match(jiaBing, /半径和/);
+
+  // 面板输入与提示已更新
+  assert.equal(rEl.value, '300');
+  assert.match(doc.getElementById('key-r-hint').textContent, /有效安全半径 300/);
+
+  // 清除继承：恢复为表演者半径 20，甲丙回到安全
+  doc.getElementById('btn-key-r-clear').click();
+  await new Promise((r) => setTimeout(r, 10));
+  assert.equal(rEl.value, '');
+  const rows2 = [...doc.querySelectorAll('.pair-row')].map((el) => el.textContent);
+  const jiaBing2 = rows2.find((t) => t.includes('甲') && t.includes('丙'));
+  assert.match(jiaBing2, /安全/);
+  dom.window.close();
+});
+
+test('样例丁含关键帧半径数据：API 形态前端可编辑、半径和显示为区间', async () => {
+  const dom = await boot();
+  const { window } = dom;
+  const doc = window.document;
+  const canvas = doc.getElementById('stage');
+
+  // 丁·跟进展伞：末帧 (940,570) 带 r=55
+  canvas.dispatchEvent(new window.MouseEvent('pointerdown', {
+    bubbles: true, cancelable: true, clientX: 940, clientY: 570, button: 0
+  }));
+  canvas.dispatchEvent(new window.MouseEvent('pointerup', {
+    bubbles: true, cancelable: true, clientX: 940, clientY: 570, button: 0
+  }));
+  await new Promise((r) => setTimeout(r, 5));
+  assert.equal(doc.getElementById('key-panel').hidden, false);
+  assert.match(doc.getElementById('key-perf-name').textContent, /丁/);
+  assert.equal(doc.getElementById('key-r').value, '55');
+
+  // 丙×丁为可变半径碰撞对，状态文本含半径和区间（最小~最大）
+  const bingDing = [...doc.querySelectorAll('.pair-row')]
+    .map((el) => el.textContent)
+    .find((t) => t.includes('丙') && t.includes('丁'));
+  assert.match(bingDing, /碰撞/);
+  assert.match(bingDing, /半径和 \d+(\.\d+)?～\d+(\.\d+)?/);
+  dom.window.close();
+});

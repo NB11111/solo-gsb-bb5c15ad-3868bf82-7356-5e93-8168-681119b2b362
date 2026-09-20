@@ -245,6 +245,34 @@ input:focus { outline: none; border-color: var(--accent); }
 }
 .duration-edit input { width: 64px; margin: 0 4px; }
 
+/* 选中关键帧编辑 */
+.panel-key { border-color: rgba(88, 166, 255, .45); }
+.panel-key .panel-head b { color: var(--accent); }
+.key-edit {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px 10px;
+  padding: 10px 14px 12px;
+  align-items: center;
+}
+.key-edit label {
+  font-size: 12px;
+  color: var(--text-dim);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+.key-edit input { width: 100%; min-width: 0; }
+#btn-key-del { justify-self: end; }
+.key-r-hint {
+  grid-column: 1 / -1;
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.45;
+  color: var(--text-dim);
+}
+#btn-key-r-clear { grid-column: 1 / -1; justify-self: start; }
+
 /* 摘要 */
 .panel-summary { padding: 12px 14px; }
 .summary-row { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-bottom: 10px; }

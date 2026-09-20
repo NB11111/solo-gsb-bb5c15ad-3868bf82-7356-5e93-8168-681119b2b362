@@ -76,6 +76,23 @@
         </div>
       </div>
 
+      <div class="panel panel-key" id="key-panel" hidden>
+        <div class="panel-head">
+          <span>选中走位点 · <b id="key-perf-name"></b></span>
+          <button id="btn-key-del" class="btn btn-mini" title="删除该走位点（每人至少保留 1 帧）">✕ 删帧</button>
+        </div>
+        <div class="key-edit">
+          <label>时刻 <input id="key-t" type="number" min="0" step="0.1" /> s</label>
+          <label>位置 X <input id="key-x" type="number" min="0" max="1000" step="1" /></label>
+          <label>位置 Y <input id="key-y" type="number" min="0" max="600" step="1" /></label>
+          <label title="该时刻的安全半径，用于开伞、展开道具等占用范围变化；留空则继承表演者身体半径，相邻关键帧之间线性插值">
+            安全半径 <input id="key-r" type="number" min="0" max="300" step="0.5" placeholder="继承" />
+          </label>
+          <button id="btn-key-r-clear" class="btn btn-mini btn-ghost" title="清除本帧自定义半径，恢复为继承表演者半径">↺ 继承半径</button>
+          <p class="key-r-hint" id="key-r-hint"></p>
+        </div>
+      </div>
+
       <div class="panel panel-summary">
         <div class="summary-row">
           <div class="summary-item">
